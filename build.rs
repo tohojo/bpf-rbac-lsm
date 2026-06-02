@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use libbpf_cargo::SkeletonBuilder;
 
 const SRC: &str = "src/bpf/rbac_lsm.bpf.c";
+const HEADER: &str = "src/bpf/vmlinux.h";
 
 fn main() {
     let out = PathBuf::from(
@@ -20,4 +21,5 @@ fn main() {
         .build_and_generate(&out)
         .unwrap();
     println!("cargo:rerun-if-changed={SRC}");
+    println!("cargo:rerun-if-changed={HEADER}");
 }
