@@ -10,13 +10,18 @@ char _license[] SEC("license") = "GPL";
 int seen_pin = 0;
 
 enum event_type {
-	BPF_SYSCALL
+	BPF_SYSCALL,
+	MAP_FD_ACCESS,
+	MAP_CREATE,
+	PROG_FD_ACCESS,
+	PROG_LOAD,
 };
 
 struct event {
 	enum event_type event_type;
 	int pid;
         u8 comm[16];
+	u8 obj_name[BPF_OBJ_NAME_LEN];
 	enum bpf_cmd bpf_cmd;
 };
 
@@ -30,19 +35,67 @@ struct {
     __type(value, __u32);
 } events SEC(".maps");
 
+static void init_event(struct event *event, enum event_type type) {
+        struct task_struct *task = bpf_get_current_task_btf();
+
+        event->event_type = type;
+        event->pid = task->pid;
+        bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm), task->comm);
+}
+
 
 SEC("lsm/bpf")
 int BPF_PROG(sys_bpf_hook, int cmd, union bpf_attr *attr, unsigned int size)
 {
 	struct event event = {};
-	struct task_struct *task;
 
-        task = bpf_get_current_task_btf();
-
-        event.event_type = BPF_SYSCALL;
-        event.pid = task->pid;
+        init_event(&event, BPF_SYSCALL);
 	event.bpf_cmd = cmd;
-        bpf_probe_read_kernel_str(&event.comm, sizeof(event.comm), task->comm);
+
+	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
+			      sizeof(event));
+
+	return 0;
+}
+
+SEC("lsm/bpf_map")
+int BPF_PROG(sys_bpf_map_hook, struct bpf_map *map)
+{
+	struct event event = {};
+
+        init_event(&event, MAP_FD_ACCESS);
+
+        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), map->name);
+
+	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
+			      sizeof(event));
+
+	return 0;
+}
+
+SEC("lsm/bpf_map_create")
+int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
+{
+	struct event event = {};
+
+        init_event(&event, MAP_CREATE);
+
+        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), map->name);
+
+	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
+			      sizeof(event));
+
+	return 0;
+}
+
+SEC("lsm/bpf_prog_load")
+int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
+{
+	struct event event = {};
+
+        init_event(&event, PROG_LOAD);
+
+        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), prog->aux->name);
 
 	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
 			      sizeof(event));

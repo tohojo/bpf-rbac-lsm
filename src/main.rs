@@ -1,7 +1,9 @@
+use std::ffi::CStr;
+use std::fmt::{Display, Formatter};
 use std::mem::MaybeUninit;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Error, Result, anyhow, bail};
 use libbpf_rs::PerfBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
@@ -21,25 +23,64 @@ mod rbac_lsm {
 #[allow(clippy::wildcard_imports)]
 use rbac_lsm::*;
 
-use rbac_lsm::types::bpf_cmd;
-use rbac_lsm::types::event_type;
+use rbac_lsm::types::{bpf_cmd, event, event_type};
 
 unsafe impl Plain for rbac_lsm::types::event {}
 
-#[derive(Debug, EnumDisplay, FromRepr)]
-#[repr(u32)]
-enum EventType {
-    BpfSyscall,
+#[derive(Debug, EnumDisplay)]
+enum EventKind {
+    BpfSyscall { cmd: BpfCmd },
+    MapFdAccess { map_name: String },
+    MapCreate { map_name: String },
+    ProgFdAccess { prog_name: String },
+    ProgLoad { prog_name: String },
 }
 
-impl TryFrom<event_type> for EventType {
-    type Error = &'static str;
+#[derive(Debug)]
+struct Event {
+    comm: String,
+    pid: i32,
+    kind: EventKind,
+}
 
-    fn try_from(value: event_type) -> Result<Self, Self::Error> {
-        match Self::from_repr(value.0) {
-            Some(val) => Ok(val),
-            _ => Err("Unknown event"),
-        }
+fn buf_to_str(buf: &[u8]) -> Result<&str, Error> {
+    Ok(CStr::from_bytes_until_nul(buf)?.to_str()?)
+}
+
+impl TryFrom<event> for Event {
+    type Error = Error;
+
+    fn try_from(evt: event) -> Result<Self, Self::Error> {
+        let event = Event {
+            comm: buf_to_str(&evt.comm)?.into(),
+            pid: evt.pid,
+            kind: match evt.event_type {
+                event_type::BPF_SYSCALL => EventKind::BpfSyscall {
+                    cmd: evt.bpf_cmd.try_into()?,
+                },
+                event_type::MAP_FD_ACCESS => EventKind::MapFdAccess {
+                    map_name: buf_to_str(&evt.obj_name)?.into(),
+                },
+                event_type::MAP_CREATE => EventKind::MapCreate {
+                    map_name: buf_to_str(&evt.obj_name)?.into(),
+                },
+                event_type::PROG_FD_ACCESS => EventKind::ProgFdAccess {
+                    prog_name: buf_to_str(&evt.obj_name)?.into(),
+                },
+                event_type::PROG_LOAD => EventKind::ProgLoad {
+                    prog_name: buf_to_str(&evt.obj_name)?.into(),
+                },
+                t => bail!("Unknown event type {:?}", t),
+            },
+        };
+
+        Ok(event)
+    }
+}
+
+impl Display for Event {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{}({}): {:?}", self.comm, self.pid, self.kind)
     }
 }
 
@@ -88,12 +129,12 @@ enum BpfCmd {
 }
 
 impl TryFrom<bpf_cmd> for BpfCmd {
-    type Error = &'static str;
+    type Error = Error;
 
     fn try_from(value: bpf_cmd) -> Result<Self, Self::Error> {
         match Self::from_repr(value.0) {
             Some(val) => Ok(val),
-            _ => Err("Unknown BPF command"),
+            _ => Err(anyhow!("Unknown BPF command {}", value.0)),
         }
     }
 }
@@ -110,18 +151,12 @@ fn handle_event(_cpu: i32, data: &[u8]) {
         "00:00:00".to_string()
     };
 
-    let comm = str::from_utf8(&event.comm).unwrap();
-    let etyp: EventType = event.event_type.try_into().unwrap();
-    let cmd: BpfCmd = event.bpf_cmd.try_into().unwrap();
-
-    println!(
-        "{:8} {:16} {:<7} {}:{}",
-        now,
-        comm.trim_end_matches(char::from(0)),
-        event.pid,
-        etyp,
-        cmd,
-    );
+    let evt: Result<Event> = event.try_into();
+    if let Ok(e) = evt {
+        println!("{:8} {}", now, e);
+    } else {
+        eprintln!("Error parsing event: {:?}", evt);
+    }
 }
 
 fn handle_lost_events(cpu: i32, count: u64) {
