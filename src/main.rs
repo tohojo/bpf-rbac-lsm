@@ -7,6 +7,7 @@ use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
 use libbpf_rs::skel::SkelBuilder;
 use plain::Plain;
+use strum_macros::{Display as EnumDisplay, FromRepr};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -25,22 +26,25 @@ use rbac_lsm::types::event_type;
 
 unsafe impl Plain for rbac_lsm::types::event {}
 
-#[derive(Debug)]
+#[derive(Debug, EnumDisplay, FromRepr)]
+#[repr(u32)]
 enum EventType {
     BpfSyscall,
 }
 
 impl TryFrom<event_type> for EventType {
     type Error = &'static str;
+
     fn try_from(value: event_type) -> Result<Self, Self::Error> {
-        match value {
-            event_type::BPF_SYSCALL => Ok(Self::BpfSyscall),
+        match Self::from_repr(value.0) {
+            Some(val) => Ok(val),
             _ => Err("Unknown event"),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, EnumDisplay, FromRepr)]
+#[repr(u32)]
 enum BpfCmd {
     MapCreate,
     MapLookupElem,
@@ -85,48 +89,11 @@ enum BpfCmd {
 
 impl TryFrom<bpf_cmd> for BpfCmd {
     type Error = &'static str;
+
     fn try_from(value: bpf_cmd) -> Result<Self, Self::Error> {
-        match value {
-            bpf_cmd::BPF_MAP_CREATE => Ok(Self::MapCreate),
-            bpf_cmd::BPF_MAP_LOOKUP_ELEM => Ok(Self::MapLookupElem),
-            bpf_cmd::BPF_MAP_UPDATE_ELEM => Ok(Self::MapUpdateElem),
-            bpf_cmd::BPF_MAP_DELETE_ELEM => Ok(Self::MapDeleteElem),
-            bpf_cmd::BPF_MAP_GET_NEXT_KEY => Ok(Self::MapGetNextKey),
-            bpf_cmd::BPF_PROG_LOAD => Ok(Self::ProgLoad),
-            bpf_cmd::BPF_OBJ_PIN => Ok(Self::ObjPin),
-            bpf_cmd::BPF_OBJ_GET => Ok(Self::ObjGet),
-            bpf_cmd::BPF_PROG_ATTACH => Ok(Self::ProgAttach),
-            bpf_cmd::BPF_PROG_DETACH => Ok(Self::ProgDetach),
-            bpf_cmd::BPF_PROG_RUN => Ok(Self::ProgRun),
-            bpf_cmd::BPF_PROG_GET_NEXT_ID => Ok(Self::ProgGetNextId),
-            bpf_cmd::BPF_MAP_GET_NEXT_ID => Ok(Self::MapGetNextId),
-            bpf_cmd::BPF_PROG_GET_FD_BY_ID => Ok(Self::ProgGetFdById),
-            bpf_cmd::BPF_MAP_GET_FD_BY_ID => Ok(Self::MapGetFdById),
-            bpf_cmd::BPF_OBJ_GET_INFO_BY_FD => Ok(Self::ObjGetInfoByFd),
-            bpf_cmd::BPF_PROG_QUERY => Ok(Self::ProgQuery),
-            bpf_cmd::BPF_RAW_TRACEPOINT_OPEN => Ok(Self::RawTracepointOpen),
-            bpf_cmd::BPF_BTF_LOAD => Ok(Self::BtfLoad),
-            bpf_cmd::BPF_BTF_GET_FD_BY_ID => Ok(Self::BtfGetFdById),
-            bpf_cmd::BPF_TASK_FD_QUERY => Ok(Self::TaskFdQuery),
-            bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_ELEM => Ok(Self::MapLookupAndDeleteElem),
-            bpf_cmd::BPF_MAP_FREEZE => Ok(Self::MapFreeze),
-            bpf_cmd::BPF_BTF_GET_NEXT_ID => Ok(Self::BtfGetNextId),
-            bpf_cmd::BPF_MAP_LOOKUP_BATCH => Ok(Self::MapLookupBatch),
-            bpf_cmd::BPF_MAP_LOOKUP_AND_DELETE_BATCH => Ok(Self::MapLookupAndDeleteBatch),
-            bpf_cmd::BPF_MAP_UPDATE_BATCH => Ok(Self::MapUpdateBatch),
-            bpf_cmd::BPF_MAP_DELETE_BATCH => Ok(Self::MapDeleteBatch),
-            bpf_cmd::BPF_LINK_CREATE => Ok(Self::LinkCreate),
-            bpf_cmd::BPF_LINK_UPDATE => Ok(Self::LinkUpdate),
-            bpf_cmd::BPF_LINK_GET_FD_BY_ID => Ok(Self::LinkGetFdById),
-            bpf_cmd::BPF_LINK_GET_NEXT_ID => Ok(Self::LinkGetNextId),
-            bpf_cmd::BPF_ENABLE_STATS => Ok(Self::EnableStats),
-            bpf_cmd::BPF_ITER_CREATE => Ok(Self::IterCreate),
-            bpf_cmd::BPF_LINK_DETACH => Ok(Self::LinkDetach),
-            bpf_cmd::BPF_PROG_BIND_MAP => Ok(Self::ProgBindMap),
-            bpf_cmd::BPF_TOKEN_CREATE => Ok(Self::TokenCreate),
-            bpf_cmd::BPF_PROG_STREAM_READ_BY_FD => Ok(Self::ProgStreamReadByFd),
-            bpf_cmd::BPF_PROG_ASSOC_STRUCT_OPS => Ok(Self::ProgAssocStructOps),
-            _ => Err("Unknown event"),
+        match Self::from_repr(value.0) {
+            Some(val) => Ok(val),
+            _ => Err("Unknown BPF command"),
         }
     }
 }
@@ -148,7 +115,7 @@ fn handle_event(_cpu: i32, data: &[u8]) {
     let cmd: BpfCmd = event.bpf_cmd.try_into().unwrap();
 
     println!(
-        "{:8} {:16} {:<7} {:20?}:{:<14?}",
+        "{:8} {:16} {:<7} {}:{}",
         now,
         comm.trim_end_matches(char::from(0)),
         event.pid,

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 libbpf-rs = "0.26.2"
 plain = "0.2.3"
+strum_macros = "0.28.0"
 time = { version = "0.3.47", features = ["formatting", "local-offset", "macros"] }
 
 [build-dependencies]
