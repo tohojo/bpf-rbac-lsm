@@ -88,12 +88,34 @@ int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 	return 0;
 }
 
+static void walk_bpf_instructions(struct bpf_prog *prog)
+{
+	int insn_cnt = prog->len, i;
+
+	bpf_for(i, 0, insn_cnt) {
+		struct bpf_insn insn;
+
+                if (bpf_probe_read_kernel(&insn, sizeof(insn), &prog->insnsi[i]))
+			continue;
+
+		if (insn.code != (BPF_JMP | BPF_CALL))
+			continue;
+
+		if (insn.src_reg == 0) { /* helper */
+			bpf_printk("BPF prog %s(%d) called helper %d at insn %d\n", prog->aux->name, prog->type, insn.imm, i);
+		} else if (insn.src_reg == BPF_PSEUDO_KFUNC_CALL) { /* kfunc */
+			bpf_printk("BPF prog %s(%d) called kfunc %d from BTF ID %d at insn %d\n", prog->aux->name, prog->type, insn.imm, insn.off, i);
+		}
+	}
+}
+
 SEC("lsm/bpf_prog_load")
 int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
 {
 	struct event event = {};
 
         init_event(&event, PROG_LOAD);
+	walk_bpf_instructions(prog);
 
         bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), prog->aux->name);
 
