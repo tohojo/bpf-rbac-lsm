@@ -22,6 +22,7 @@ struct event {
 	int pid;
         u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
+        u32 obj_id;
 	enum bpf_cmd bpf_cmd;
 };
 
@@ -72,7 +73,9 @@ int BPF_PROG(sys_bpf_map_hook, struct bpf_map *map)
         if (!event)
 		goto out;
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), map->name);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  map->name);
+        event->obj_id = map->id;
 
 	bpf_ringbuf_submit(event, 0);
 out:

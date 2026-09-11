@@ -30,9 +30,9 @@ unsafe impl Plain for rbac_lsm::types::event {}
 #[derive(Debug, EnumDisplay)]
 enum EventKind {
     BpfSyscall { cmd: BpfCmd },
-    MapFdAccess { map_name: String },
+    MapFdAccess { map_id: u32, map_name: String },
     MapCreate { map_name: String },
-    ProgFdAccess { prog_name: String },
+    ProgFdAccess { prog_id: u32, prog_name: String },
     ProgLoad { prog_name: String },
 }
 
@@ -60,12 +60,14 @@ impl TryFrom<event> for Event {
                 },
                 event_type::MAP_FD_ACCESS => EventKind::MapFdAccess {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
+                    map_id: evt.obj_id,
                 },
                 event_type::MAP_CREATE => EventKind::MapCreate {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                 },
                 event_type::PROG_FD_ACCESS => EventKind::ProgFdAccess {
                     prog_name: buf_to_str(&evt.obj_name)?.into(),
+                    prog_id: evt.obj_id,
                 },
                 event_type::PROG_LOAD => EventKind::ProgLoad {
                     prog_name: buf_to_str(&evt.obj_name)?.into(),

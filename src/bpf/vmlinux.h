@@ -33,6 +33,7 @@ struct task_struct {
 
 struct bpf_map {
 	char name[BPF_OBJ_NAME_LEN];
+	u32 id;
 };
 
 struct bpf_prog_aux {
