@@ -29,62 +29,67 @@ struct event {
 struct event _event = {0};
 
 struct {
-    /* bpflint: disable=perfbuf-usage */
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __type(key, __u32);
-    __type(value, __u32);
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 4096);
 } events SEC(".maps");
 
-static void init_event(struct event *event, enum event_type type) {
-        struct task_struct *task = bpf_get_current_task_btf();
+static struct event *new_event(enum event_type type) {
+        struct task_struct *task;
+	struct event *event;
+
+        event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+        if (!event)
+		return NULL;
+
+        task = bpf_get_current_task_btf();
 
         event->event_type = type;
         event->pid = task->pid;
-        bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm), task->comm);
+        bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm),
+                                  task->comm);
+        return event;
 }
 
 
 SEC("lsm/bpf")
 int BPF_PROG(sys_bpf_hook, int cmd, union bpf_attr *attr, unsigned int size)
 {
-	struct event event = {};
+	struct event *event = new_event(BPF_SYSCALL);
+	if (!event)
+		goto out;
 
-        init_event(&event, BPF_SYSCALL);
-	event.bpf_cmd = cmd;
+	event->bpf_cmd = cmd;
 
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
-			      sizeof(event));
-
+	bpf_ringbuf_submit(event, 0);
+out:
 	return 0;
 }
 
 SEC("lsm/bpf_map")
 int BPF_PROG(sys_bpf_map_hook, struct bpf_map *map)
 {
-	struct event event = {};
+	struct event *event = new_event(MAP_FD_ACCESS);
+        if (!event)
+		goto out;
 
-        init_event(&event, MAP_FD_ACCESS);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), map->name);
 
-        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), map->name);
-
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
-			      sizeof(event));
-
+	bpf_ringbuf_submit(event, 0);
+out:
 	return 0;
 }
 
 SEC("lsm/bpf_map_create")
 int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 {
-	struct event event = {};
+	struct event *event = new_event(MAP_CREATE);
+	if (!event)
+		goto out;
 
-        init_event(&event, MAP_CREATE);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), map->name);
 
-        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), map->name);
-
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
-			      sizeof(event));
-
+        bpf_ringbuf_submit(event, 0);
+out:
 	return 0;
 }
 
@@ -112,15 +117,15 @@ static void walk_bpf_instructions(struct bpf_prog *prog)
 SEC("lsm/bpf_prog_load")
 int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
 {
-	struct event event = {};
+	struct event *event = new_event(PROG_LOAD);
+        if (!event)
+		goto out;
 
-        init_event(&event, PROG_LOAD);
 	walk_bpf_instructions(prog);
 
-        bpf_probe_read_kernel_str(&event.obj_name, sizeof(event.obj_name), prog->aux->name);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), prog->aux->name);
 
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event,
-			      sizeof(event));
-
+        bpf_ringbuf_submit(event, 0);
+out:
 	return 0;
 }

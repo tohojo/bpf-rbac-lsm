@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 use std::time::Duration;
 
 use anyhow::{Error, Result, anyhow, bail};
-use libbpf_rs::PerfBufferBuilder;
+use libbpf_rs::RingBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
 use libbpf_rs::skel::SkelBuilder;
@@ -139,7 +139,7 @@ impl TryFrom<bpf_cmd> for BpfCmd {
     }
 }
 
-fn handle_event(_cpu: i32, data: &[u8]) {
+fn handle_event(data: &[u8]) -> i32 {
     let mut event = rbac_lsm::types::event::default();
     plain::copy_from_bytes(&mut event, data).expect("Data buffer was too short");
 
@@ -157,10 +157,7 @@ fn handle_event(_cpu: i32, data: &[u8]) {
     } else {
         eprintln!("Error parsing event: {:?}", evt);
     }
-}
-
-fn handle_lost_events(cpu: i32, count: u64) {
-    eprintln!("Lost {count} events on CPU {cpu}");
+    0
 }
 
 fn main() -> Result<()> {
@@ -173,12 +170,11 @@ fn main() -> Result<()> {
 
     println!("Loaded BPF LSM. Press Ctrl-C to exit...");
 
-    let perf = PerfBufferBuilder::new(&skel.maps.events)
-        .sample_cb(handle_event)
-        .lost_cb(handle_lost_events)
-        .build()?;
+    let mut r = RingBufferBuilder::new();
+    r.add(&skel.maps.events, handle_event)?;
+    let ring = r.build()?;
 
     loop {
-        perf.poll(Duration::from_millis(100))?;
+        ring.poll(Duration::from_millis(100))?;
     }
 }
