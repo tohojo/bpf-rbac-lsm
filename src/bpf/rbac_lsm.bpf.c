@@ -132,3 +132,19 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
 out:
 	return 0;
 }
+
+SEC("lsm/bpf_prog")
+int BPF_PROG(sys_bpf_prog_hook, struct bpf_prog *prog)
+{
+	struct event *event = new_event(PROG_FD_ACCESS);
+        if (!event)
+		goto out;
+
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  prog->aux->name);
+        event->obj_id = prog->aux->id;
+
+	bpf_ringbuf_submit(event, 0);
+out:
+	return 0;
+}
