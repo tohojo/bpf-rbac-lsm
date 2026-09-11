@@ -23,6 +23,8 @@ struct event {
         u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
         u32 obj_id;
+        enum bpf_prog_type prog_type;
+        enum bpf_map_type map_type;
 	enum bpf_cmd bpf_cmd;
 };
 
@@ -89,7 +91,9 @@ int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 	if (!event)
 		goto out;
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), map->name);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  map->name);
+        event->map_type = map->map_type;
 
         bpf_ringbuf_submit(event, 0);
 out:
@@ -126,7 +130,9 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
 
 	walk_bpf_instructions(prog);
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name), prog->aux->name);
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  prog->aux->name);
+        event->prog_type = prog->type;
 
         bpf_ringbuf_submit(event, 0);
 out:

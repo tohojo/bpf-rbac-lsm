@@ -32,6 +32,7 @@ struct task_struct {
 };
 
 struct bpf_map {
+	enum bpf_map_type map_type;
 	char name[BPF_OBJ_NAME_LEN];
 	u32 id;
 };
