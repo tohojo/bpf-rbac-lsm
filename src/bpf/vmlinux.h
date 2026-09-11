@@ -37,7 +37,7 @@ struct bpf_map {
 };
 
 struct bpf_prog_aux {
-  char name[BPF_OBJ_NAME_LEN];
+	char name[BPF_OBJ_NAME_LEN];
 	u32 id;
 };
 
