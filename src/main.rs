@@ -1,9 +1,11 @@
 use std::ffi::CStr;
 use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::io::{self, BufRead};
 use std::mem::MaybeUninit;
 use std::time::Duration;
 
-use anyhow::{Error, Result, anyhow, bail};
+use anyhow::{Error, Result, anyhow, bail, format_err};
 use libbpf_rs::RingBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
@@ -32,6 +34,7 @@ enum EventKind {
     BpfSyscall { cmd: BpfCmd },
     MapFdAccess { map_id: u32, map_name: String },
     MapCreate { map_name: String },
+    MapMmap { map_id: u32, map_name: String },
     ProgFdAccess { prog_id: u32, prog_name: String },
     ProgLoad { prog_name: String },
 }
@@ -61,6 +64,10 @@ impl TryFrom<event> for Event {
                     cmd: evt.bpf_cmd.try_into()?,
                 },
                 event_type::MAP_FD_ACCESS => EventKind::MapFdAccess {
+                    map_name: buf_to_str(&evt.obj_name)?.into(),
+                    map_id: evt.obj_id,
+                },
+                event_type::MAP_MMAP => EventKind::MapMmap {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                     map_id: evt.obj_id,
                 },
@@ -168,11 +175,28 @@ fn handle_event(data: &[u8]) -> i32 {
     0
 }
 
+fn resolve_ksym(name: &str) -> Result<u64> {
+    let file = File::open("/proc/kallsyms")?;
+    let mut lines = io::BufReader::new(file).lines();
+    if let Some(Ok(line)) =
+        lines.find(|l| l.as_ref().is_ok_and(|l| l.split(" ").nth(2) == Some(name)))
+    {
+        if let Some((addr, _)) = line.split_once(" ") {
+            return Ok(u64::from_str_radix(addr, 16)?);
+        }
+    }
+    Err(format_err!("ksym '{}' not found", name))
+}
+
 fn main() -> Result<()> {
     let skel_builder = RbacLsmSkelBuilder::default();
 
+    let addr = resolve_ksym("bpf_map_fops")?;
     let mut open_object = MaybeUninit::uninit();
-    let open_skel = skel_builder.open(&mut open_object)?;
+    let mut open_skel = skel_builder.open(&mut open_object)?;
+    open_skel.maps.rodata_data.as_mut().map(|d| {
+        d.map_fops_addr = addr;
+    });
     let mut skel = open_skel.load()?;
     skel.attach()?;
 

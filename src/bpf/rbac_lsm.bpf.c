@@ -7,12 +7,13 @@
 
 char _license[] SEC("license") = "GPL";
 
-int seen_pin = 0;
+volatile const u64 map_fops_addr = 0;
 
 enum event_type {
 	BPF_SYSCALL,
 	MAP_FD_ACCESS,
 	MAP_CREATE,
+	MAP_MMAP,
 	PROG_FD_ACCESS,
 	PROG_LOAD,
 };
@@ -151,6 +152,27 @@ int BPF_PROG(sys_bpf_prog_hook, struct bpf_prog *prog)
         bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
                                   prog->aux->name);
         event->obj_id = prog->aux->id;
+
+	bpf_ringbuf_submit(event, 0);
+out:
+	return 0;
+}
+
+SEC("lsm/mmap_file")
+int BPF_PROG(mmap_file_hook, struct file *file) {
+	struct bpf_map *map;
+
+	if (!file || (u64)file->f_op != map_fops_addr)
+		return 0;
+
+        map = file->private_data;
+	struct event *event = new_event(MAP_MMAP);
+        if (!event)
+		goto out;
+        event->obj_id = map->id;
+        event->map_type = map->map_type;
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  map->name);
 
 	bpf_ringbuf_submit(event, 0);
 out:

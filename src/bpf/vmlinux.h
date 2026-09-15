@@ -67,6 +67,11 @@ struct bpf_prog {
 	};
 };
 
+struct file {
+	const struct file_operations	*f_op;
+	void				*private_data;
+};
+
 #ifndef BPF_NO_PRESERVE_ACCESS_INDEX
 #pragma clang attribute pop
 #endif
