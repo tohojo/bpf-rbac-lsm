@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/bpf.h>
+#include <errno.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "vmlinux.h"
@@ -18,6 +19,22 @@ enum event_type {
 	PROG_LOAD,
 };
 
+enum func_type {
+	FUNC_HELPER,
+	FUNC_KFUNC,
+};
+
+struct bpf_func_entry {
+	u16 call_type;
+	u16 btf_id;
+	u32 func_id;
+};
+
+struct bpf_func_list {
+	u64 num_entries;
+        struct bpf_func_entry entries[];
+};
+
 struct event {
 	enum event_type event_type;
 	int pid;
@@ -27,8 +44,11 @@ struct event {
 	u64 userns;
 	enum bpf_prog_type prog_type;
 	enum bpf_map_type map_type;
-	enum bpf_cmd bpf_cmd;
+        enum bpf_cmd bpf_cmd;
+        struct bpf_func_list funcs; /* keep last */
 };
+
+#define MAX_FUNC_ENTRIES 1024
 
 // Dummy instance to get skeleton to generate definition for `struct event`
 struct event _event = {0};
@@ -38,25 +58,34 @@ struct {
     __uint(max_entries, 4096);
 } events SEC(".maps");
 
-static struct event *new_event(enum event_type type) {
-        struct task_struct *task;
-	struct event *event;
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, MAX_FUNC_ENTRIES);
+    __type(key, u32);
+    __type(value, sizeof(struct bpf_func_entry));
+} func_entry_scratch SEC(".maps");
 
-        event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
-        if (!event)
-		return NULL;
-
-        task = bpf_get_current_task_btf();
+static void event_init(struct event *event, enum event_type type) {
+        struct task_struct *task = bpf_get_current_task_btf();
 
         event->event_type = type;
         event->pid = task->pid;
         event->userns = task->cred->user_ns->ns.inum;
         bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm),
                                   task->comm);
+}
+static struct event *new_event(enum event_type type) {
+	struct event *event;
+
+        event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+        if (!event)
+		return NULL;
+
+        event_init(event, type);
         return event;
 }
 
-void event_populate_map(struct event *event, struct bpf_map *map)
+static void event_populate_map(struct event *event, struct bpf_map *map)
 {
         bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
                                   map->name);
@@ -64,7 +93,7 @@ void event_populate_map(struct event *event, struct bpf_map *map)
         event->map_type = map->map_type;
 }
 
-void event_populate_prog(struct event *event, struct bpf_prog *prog)
+static void event_populate_prog(struct event *event, struct bpf_prog *prog)
 {
         bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
                                   prog->aux->name);
@@ -113,9 +142,10 @@ out:
 	return 0;
 }
 
-static void walk_bpf_instructions(struct bpf_prog *prog)
+static int walk_bpf_instructions(struct bpf_prog *prog)
 {
-	int insn_cnt = prog->len, i;
+	int insn_cnt = prog->len, i, num_entries = 0;
+	struct bpf_func_entry *entry;
 
 	bpf_for(i, 0, insn_cnt) {
 		struct bpf_insn insn;
@@ -126,26 +156,69 @@ static void walk_bpf_instructions(struct bpf_prog *prog)
 		if (insn.code != (BPF_JMP | BPF_CALL))
 			continue;
 
-		if (insn.src_reg == 0) { /* helper */
-			bpf_printk("BPF prog %s(%d) called helper %d at insn %d\n", prog->aux->name, prog->type, insn.imm, i);
+                if (num_entries >= MAX_FUNC_ENTRIES)
+			return -E2BIG;
+
+                entry = bpf_map_lookup_elem(&func_entry_scratch, &num_entries);
+                if (!entry)
+			return -E2BIG;
+
+                if (insn.src_reg == 0) { /* helper */
+			entry->call_type = FUNC_HELPER;
+                        entry->func_id = insn.imm;
+                        entry->btf_id = 0;
 		} else if (insn.src_reg == BPF_PSEUDO_KFUNC_CALL) { /* kfunc */
-			bpf_printk("BPF prog %s(%d) called kfunc %d from BTF ID %d at insn %d\n", prog->aux->name, prog->type, insn.imm, insn.off, i);
-		}
-	}
+			entry->call_type = FUNC_KFUNC;
+                        entry->func_id = insn.imm;
+                        entry->btf_id = insn.off;
+                }
+                num_entries++;
+        }
+
+        return num_entries;
 }
 
 SEC("lsm/bpf_prog_load")
-int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
-{
-	struct event *event = new_event(PROG_LOAD);
-        if (!event)
+int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
+        u32 extra_size, num_entries;
+        struct bpf_dynptr ptr;
+        struct event *event;
+        int ret, i;
+
+        ret = walk_bpf_instructions(prog);
+        if (ret < 0)
+		goto out;
+        num_entries = ret;
+
+        extra_size = num_entries * sizeof(struct bpf_func_entry);
+        if (extra_size > sizeof(struct bpf_func_entry) * MAX_FUNC_ENTRIES)
 		goto out;
 
-        walk_bpf_instructions(prog);
-        event_populate_prog(event, prog);
+        ret = bpf_ringbuf_reserve_dynptr(&events, sizeof(*event) + extra_size,
+                                         0, &ptr);
+        if (ret)
+		goto err;
 
-        bpf_ringbuf_submit(event, 0);
+        event = bpf_dynptr_data(&ptr, 0, sizeof(*event));
+        if (!event)
+                goto err;
+
+        event_init(event, PROG_LOAD);
+        event_populate_prog(event, prog);
+        event->funcs.num_entries = num_entries;
+	bpf_for(i, 0, num_entries) {
+		struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
+		if (!entry)
+			goto err;
+		bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
+				 entry, sizeof(*entry), 0);
+	}
+
+        bpf_ringbuf_submit_dynptr(&ptr, 0);
 out:
+	return 0;
+err:
+	bpf_ringbuf_discard_dynptr(&ptr, 0);
 	return 0;
 }
 
