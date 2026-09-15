@@ -40,6 +40,7 @@ enum EventKind {
 struct Event {
     comm: String,
     pid: i32,
+    userns: u64,
     kind: EventKind,
 }
 
@@ -54,6 +55,7 @@ impl TryFrom<event> for Event {
         let event = Event {
             comm: buf_to_str(&evt.comm)?.into(),
             pid: evt.pid,
+            userns: evt.userns,
             kind: match evt.event_type {
                 event_type::BPF_SYSCALL => EventKind::BpfSyscall {
                     cmd: evt.bpf_cmd.try_into()?,
@@ -82,7 +84,11 @@ impl TryFrom<event> for Event {
 
 impl Display for Event {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "{}({}): {:?}", self.comm, self.pid, self.kind)
+        write!(
+            f,
+            "{}({}) in {}: {:?}",
+            self.comm, self.pid, self.userns, self.kind
+        )
     }
 }
 

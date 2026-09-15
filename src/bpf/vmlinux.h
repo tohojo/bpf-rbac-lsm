@@ -24,11 +24,23 @@ typedef __s32 s32;
 typedef int __kernel_pid_t;
 typedef __kernel_pid_t pid_t;
 
+struct ns_common {
+	unsigned int inum;
+};
+
+struct user_namespace {
+	struct ns_common ns;
+};
+
+struct cred {
+	struct user_namespace *user_ns;
+};
 
 struct task_struct {
 	pid_t pid;
 	pid_t tgid;
 	char comm[16];
+	const struct cred *cred;
 };
 
 struct bpf_map {

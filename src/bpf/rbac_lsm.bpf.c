@@ -20,11 +20,12 @@ enum event_type {
 struct event {
 	enum event_type event_type;
 	int pid;
-        u8 comm[16];
+	u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
-        u32 obj_id;
-        enum bpf_prog_type prog_type;
-        enum bpf_map_type map_type;
+	u32 obj_id;
+	u64 userns;
+	enum bpf_prog_type prog_type;
+	enum bpf_map_type map_type;
 	enum bpf_cmd bpf_cmd;
 };
 
@@ -48,6 +49,7 @@ static struct event *new_event(enum event_type type) {
 
         event->event_type = type;
         event->pid = task->pid;
+        event->userns = task->cred->user_ns->ns.inum;
         bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm),
                                   task->comm);
         return event;
