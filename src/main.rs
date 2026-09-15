@@ -10,7 +10,6 @@ use libbpf_rs::RingBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
 use libbpf_rs::skel::SkelBuilder;
-use strum_macros::Display as EnumDisplay;
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -35,6 +34,15 @@ struct Funcall {
     func_id: u32,
 }
 
+impl Display for Funcall {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self.call_type {
+            CallType::Helper => write!(f, "Helper({})", self.func_id),
+            CallType::Kfunc => write!(f, "Kfunc({}:{})", self.btf_id, self.func_id),
+        }
+    }
+}
+
 impl From<&bpf_func_entry> for Funcall {
     fn from(fe: &bpf_func_entry) -> Self {
         Funcall {
@@ -48,7 +56,7 @@ impl From<&bpf_func_entry> for Funcall {
     }
 }
 
-#[derive(Debug, EnumDisplay)]
+#[derive(Debug)]
 enum EventKind {
     BpfSyscall {
         cmd: BpfCmd,
@@ -77,6 +85,68 @@ enum EventKind {
         prog_type: BpfProgType,
         funcs: Vec<Funcall>,
     },
+}
+
+impl Display for EventKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        use EventKind::*;
+        match self {
+            BpfSyscall { cmd } => write!(f, "Syscall ({})", cmd),
+            MapFdAccess {
+                map_id,
+                map_name,
+                map_type,
+            } => write!(
+                f,
+                "Map FD access (id: {} name: {} type: {})",
+                map_id, map_name, map_type
+            ),
+            MapCreate { map_name, map_type } => {
+                write!(f, "Map create (name: {} type: {})", map_name, map_type)
+            }
+
+            MapMmap {
+                map_id,
+                map_name,
+                map_type,
+            } => write!(
+                f,
+                "Map FD access (id: {} name: {} type: {})",
+                map_id, map_name, map_type
+            ),
+            ProgFdAccess {
+                prog_id,
+                prog_name,
+                prog_type,
+            } => write!(
+                f,
+                "Prog FD access (id: {} name: {} type: {})",
+                prog_id, prog_name, prog_type
+            ),
+            ProgLoad {
+                prog_name,
+                prog_type,
+                funcs,
+            } => {
+                write!(
+                    f,
+                    "Prog load (name: {} type: {} funcalls: {}",
+                    prog_name,
+                    prog_type,
+                    funcs.len()
+                )?;
+                if funcs.len() > 0 {
+                    write!(f, " (")?;
+                    funcs.iter().for_each(|func| {
+                        let _ = write!(f, "{} ", func);
+                    });
+                    write!(f, "))")
+                } else {
+                    write!(f, ")")
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -139,7 +209,7 @@ impl Display for Event {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(
             f,
-            "{}({}) in {}: {:?}",
+            "{}({}) in {}: {}",
             self.comm, self.pid, self.userns, self.kind
         )
     }
