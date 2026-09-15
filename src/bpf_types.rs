@@ -12,6 +12,8 @@ pub(crate) mod rbac_lsm {
 }
 
 unsafe impl Plain for rbac_lsm::types::event {}
+unsafe impl Plain for rbac_lsm::types::bpf_func_entry {}
+unsafe impl Plain for rbac_lsm::types::bpf_func_list {}
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, EnumDisplay, FromRepr)]

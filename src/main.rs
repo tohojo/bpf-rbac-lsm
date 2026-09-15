@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{self, BufRead};
-use std::mem::MaybeUninit;
+use std::mem::{MaybeUninit, offset_of};
 use std::time::Duration;
 
 use anyhow::{Error, Result, anyhow, bail};
@@ -19,8 +19,34 @@ mod bpf_types;
 #[allow(clippy::wildcard_imports)]
 use bpf_types::rbac_lsm::*;
 
-use bpf_types::rbac_lsm::types::{event, event_type};
+use bpf_types::rbac_lsm::types::{bpf_func_entry, bpf_func_list, event, event_type};
 use bpf_types::{BpfCmd, BpfMapType, BpfProgType};
+
+#[derive(Clone, Debug)]
+enum CallType {
+    Helper,
+    Kfunc,
+}
+
+#[derive(Clone, Debug)]
+struct Funcall {
+    call_type: CallType,
+    btf_id: u16,
+    func_id: u32,
+}
+
+impl From<&bpf_func_entry> for Funcall {
+    fn from(fe: &bpf_func_entry) -> Self {
+        Funcall {
+            call_type: match fe.call_type {
+                0 => CallType::Helper,
+                _ => CallType::Kfunc,
+            },
+            btf_id: fe.btf_id,
+            func_id: fe.func_id,
+        }
+    }
+}
 
 #[derive(Debug, EnumDisplay)]
 enum EventKind {
@@ -49,6 +75,7 @@ enum EventKind {
     ProgLoad {
         prog_name: String,
         prog_type: BpfProgType,
+        funcs: Vec<Funcall>,
     },
 }
 
@@ -98,6 +125,7 @@ impl TryFrom<&event> for Event {
                 event_type::PROG_LOAD => EventKind::ProgLoad {
                     prog_name: buf_to_str(&evt.obj_name)?.into(),
                     prog_type: evt.prog_type.try_into()?,
+                    funcs: Vec::with_capacity(evt.funcs.num_entries as usize),
                 },
                 t => bail!("Unknown event type {:?}", t),
             },
@@ -117,6 +145,27 @@ impl Display for Event {
     }
 }
 
+fn collect_funcalls(event: &mut Event, data: &[u8]) -> Result<()> {
+    match &mut event.kind {
+        EventKind::ProgLoad { funcs, .. } => {
+            let extra_data = &data[offset_of!(event, funcs)..];
+            let flist: &bpf_func_list = plain::from_bytes(extra_data).expect("Not enough data");
+            if flist.num_entries > 0 {
+                let entries: &[bpf_func_entry] = plain::slice_from_bytes_len(
+                    &extra_data[offset_of!(bpf_func_list, entries)..],
+                    flist.num_entries as usize,
+                )
+                .expect("Not enough data");
+                entries
+                    .iter()
+                    .for_each(|f| funcs.push(<&bpf_func_entry as Into<Funcall>>::into(f).clone()));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn handle_event(data: &[u8]) -> i32 {
     let event: &event = plain::from_bytes(data).expect("Data buffer was too short");
 
@@ -129,7 +178,8 @@ fn handle_event(data: &[u8]) -> i32 {
     };
 
     let evt: Result<Event> = event.try_into();
-    if let Ok(e) = evt {
+    if let Ok(mut e) = evt {
+        collect_funcalls(&mut e, data).unwrap();
         println!("{:8} {}", now, e);
     } else {
         eprintln!("Error parsing event: {:?}", evt);
