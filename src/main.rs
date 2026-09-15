@@ -64,10 +64,10 @@ fn buf_to_str(buf: &[u8]) -> Result<&str, Error> {
     Ok(CStr::from_bytes_until_nul(buf)?.to_str()?)
 }
 
-impl TryFrom<event> for Event {
+impl TryFrom<&event> for Event {
     type Error = Error;
 
-    fn try_from(evt: event) -> Result<Self, Self::Error> {
+    fn try_from(evt: &event) -> Result<Self, Self::Error> {
         let event = Event {
             comm: buf_to_str(&evt.comm)?.into(),
             pid: evt.pid,
@@ -118,8 +118,7 @@ impl Display for Event {
 }
 
 fn handle_event(data: &[u8]) -> i32 {
-    let mut event = event::default();
-    plain::copy_from_bytes(&mut event, data).expect("Data buffer was too short");
+    let event: &event = plain::from_bytes(data).expect("Data buffer was too short");
 
     let now = if let Ok(now) = OffsetDateTime::now_local() {
         let format = format_description!("[hour]:[minute]:[second]");
