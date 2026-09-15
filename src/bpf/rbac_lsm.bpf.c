@@ -56,6 +56,22 @@ static struct event *new_event(enum event_type type) {
         return event;
 }
 
+void event_populate_map(struct event *event, struct bpf_map *map)
+{
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  map->name);
+        event->obj_id = map->id;
+        event->map_type = map->map_type;
+}
+
+void event_populate_prog(struct event *event, struct bpf_prog *prog)
+{
+        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
+                                  prog->aux->name);
+        event->prog_type = prog->type;
+        event->obj_id = prog->aux->id;
+}
+
 
 SEC("lsm/bpf")
 int BPF_PROG(sys_bpf_hook, int cmd, union bpf_attr *attr, unsigned int size)
@@ -72,16 +88,13 @@ out:
 }
 
 SEC("lsm/bpf_map")
-int BPF_PROG(sys_bpf_map_hook, struct bpf_map *map)
+int BPF_PROG(bpf_map_hook, struct bpf_map *map)
 {
 	struct event *event = new_event(MAP_FD_ACCESS);
         if (!event)
 		goto out;
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
-                                  map->name);
-        event->obj_id = map->id;
-
+        event_populate_map(event, map);
 	bpf_ringbuf_submit(event, 0);
 out:
 	return 0;
@@ -94,10 +107,7 @@ int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 	if (!event)
 		goto out;
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
-                                  map->name);
-        event->map_type = map->map_type;
-
+        event_populate_map(event, map);
         bpf_ringbuf_submit(event, 0);
 out:
 	return 0;
@@ -131,11 +141,8 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog)
         if (!event)
 		goto out;
 
-	walk_bpf_instructions(prog);
-
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
-                                  prog->aux->name);
-        event->prog_type = prog->type;
+        walk_bpf_instructions(prog);
+        event_populate_prog(event, prog);
 
         bpf_ringbuf_submit(event, 0);
 out:
@@ -149,9 +156,7 @@ int BPF_PROG(sys_bpf_prog_hook, struct bpf_prog *prog)
         if (!event)
 		goto out;
 
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
-                                  prog->aux->name);
-        event->obj_id = prog->aux->id;
+        event_populate_prog(event, prog);
 
 	bpf_ringbuf_submit(event, 0);
 out:
@@ -169,11 +174,8 @@ int BPF_PROG(mmap_file_hook, struct file *file) {
 	struct event *event = new_event(MAP_MMAP);
         if (!event)
 		goto out;
-        event->obj_id = map->id;
-        event->map_type = map->map_type;
-        bpf_probe_read_kernel_str(&event->obj_name, sizeof(event->obj_name),
-                                  map->name);
 
+        event_populate_map(event, map);
 	bpf_ringbuf_submit(event, 0);
 out:
 	return 0;
