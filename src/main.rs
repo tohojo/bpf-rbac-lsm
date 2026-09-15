@@ -5,38 +5,51 @@ use std::io::{self, BufRead};
 use std::mem::MaybeUninit;
 use std::time::Duration;
 
-use anyhow::{Error, Result, anyhow, bail, format_err};
+use anyhow::{Error, Result, anyhow, bail};
 use libbpf_rs::RingBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
 use libbpf_rs::skel::SkelBuilder;
-use plain::Plain;
-use strum_macros::{Display as EnumDisplay, FromRepr};
+use strum_macros::Display as EnumDisplay;
 use time::OffsetDateTime;
 use time::macros::format_description;
 
-mod rbac_lsm {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/bpf/rbac_lsm.skel.rs"
-    ));
-}
+mod bpf_types;
 
 #[allow(clippy::wildcard_imports)]
-use rbac_lsm::*;
+use bpf_types::rbac_lsm::*;
 
-use rbac_lsm::types::{bpf_cmd, event, event_type};
-
-unsafe impl Plain for rbac_lsm::types::event {}
+use bpf_types::rbac_lsm::types::{event, event_type};
+use bpf_types::{BpfCmd, BpfMapType, BpfProgType};
 
 #[derive(Debug, EnumDisplay)]
 enum EventKind {
-    BpfSyscall { cmd: BpfCmd },
-    MapFdAccess { map_id: u32, map_name: String },
-    MapCreate { map_name: String },
-    MapMmap { map_id: u32, map_name: String },
-    ProgFdAccess { prog_id: u32, prog_name: String },
-    ProgLoad { prog_name: String },
+    BpfSyscall {
+        cmd: BpfCmd,
+    },
+    MapFdAccess {
+        map_id: u32,
+        map_name: String,
+        map_type: BpfMapType,
+    },
+    MapCreate {
+        map_name: String,
+        map_type: BpfMapType,
+    },
+    MapMmap {
+        map_id: u32,
+        map_name: String,
+        map_type: BpfMapType,
+    },
+    ProgFdAccess {
+        prog_id: u32,
+        prog_name: String,
+        prog_type: BpfProgType,
+    },
+    ProgLoad {
+        prog_name: String,
+        prog_type: BpfProgType,
+    },
 }
 
 #[derive(Debug)]
@@ -66,20 +79,25 @@ impl TryFrom<event> for Event {
                 event_type::MAP_FD_ACCESS => EventKind::MapFdAccess {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                     map_id: evt.obj_id,
+                    map_type: evt.map_type.try_into()?,
                 },
                 event_type::MAP_MMAP => EventKind::MapMmap {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                     map_id: evt.obj_id,
+                    map_type: evt.map_type.try_into()?,
                 },
                 event_type::MAP_CREATE => EventKind::MapCreate {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
+                    map_type: evt.map_type.try_into()?,
                 },
                 event_type::PROG_FD_ACCESS => EventKind::ProgFdAccess {
                     prog_name: buf_to_str(&evt.obj_name)?.into(),
                     prog_id: evt.obj_id,
+                    prog_type: evt.prog_type.try_into()?,
                 },
                 event_type::PROG_LOAD => EventKind::ProgLoad {
                     prog_name: buf_to_str(&evt.obj_name)?.into(),
+                    prog_type: evt.prog_type.try_into()?,
                 },
                 t => bail!("Unknown event type {:?}", t),
             },
@@ -99,63 +117,8 @@ impl Display for Event {
     }
 }
 
-#[derive(Debug, EnumDisplay, FromRepr)]
-#[repr(u32)]
-enum BpfCmd {
-    MapCreate = 0,
-    MapLookupElem = 1,
-    MapUpdateElem = 2,
-    MapDeleteElem = 3,
-    MapGetNextKey = 4,
-    ProgLoad = 5,
-    ObjPin = 6,
-    ObjGet = 7,
-    ProgAttach = 8,
-    ProgDetach = 9,
-    ProgRun = 10,
-    ProgGetNextId = 11,
-    MapGetNextId = 12,
-    ProgGetFdById = 13,
-    MapGetFdById = 14,
-    ObjGetInfoByFd = 15,
-    ProgQuery = 16,
-    RawTracepointOpen = 17,
-    BtfLoad = 18,
-    BtfGetFdById = 19,
-    TaskFdQuery = 20,
-    MapLookupAndDeleteElem = 21,
-    MapFreeze = 22,
-    BtfGetNextId = 23,
-    MapLookupBatch = 24,
-    MapLookupAndDeleteBatch = 25,
-    MapUpdateBatch = 26,
-    MapDeleteBatch = 27,
-    LinkCreate = 28,
-    LinkUpdate = 29,
-    LinkGetFdById = 30,
-    LinkGetNextId = 31,
-    EnableStats = 32,
-    IterCreate = 33,
-    LinkDetach = 34,
-    ProgBindMap = 35,
-    TokenCreate = 36,
-    ProgStreamReadByFd = 37,
-    ProgAssocStructOps = 38,
-}
-
-impl TryFrom<bpf_cmd> for BpfCmd {
-    type Error = Error;
-
-    fn try_from(value: bpf_cmd) -> Result<Self, Self::Error> {
-        match Self::from_repr(value.0) {
-            Some(val) => Ok(val),
-            _ => Err(anyhow!("Unknown BPF command {}", value.0)),
-        }
-    }
-}
-
 fn handle_event(data: &[u8]) -> i32 {
-    let mut event = rbac_lsm::types::event::default();
+    let mut event = event::default();
     plain::copy_from_bytes(&mut event, data).expect("Data buffer was too short");
 
     let now = if let Ok(now) = OffsetDateTime::now_local() {
@@ -185,7 +148,7 @@ fn resolve_ksym(name: &str) -> Result<u64> {
             return Ok(u64::from_str_radix(addr, 16)?);
         }
     }
-    Err(format_err!("ksym '{}' not found", name))
+    Err(anyhow!("ksym '{}' not found", name))
 }
 
 fn main() -> Result<()> {
