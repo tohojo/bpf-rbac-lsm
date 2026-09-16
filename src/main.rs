@@ -243,7 +243,7 @@ fn handle_event(data: &[u8]) -> i32 {
     let event: &event = plain::from_bytes(data).expect("Data buffer was too short");
 
     let now = if let Ok(now) = OffsetDateTime::now_local() {
-        let format = format_description!("[hour]:[minute]:[second]");
+        let format = format_description!("[hour]:[minute]:[second].[subsecond digits:6]");
         now.format(&format)
             .unwrap_or_else(|_| "00:00:00".to_string())
     } else {
