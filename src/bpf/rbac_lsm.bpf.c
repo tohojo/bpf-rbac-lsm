@@ -39,10 +39,10 @@ struct bpf_func_list {
 struct event {
 	enum event_type event_type;
 	int pid;
+	u64 userns;
 	u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
 	u32 obj_id;
-	u64 userns;
 	enum bpf_prog_type prog_type;
 	enum bpf_map_type map_type;
         enum bpf_cmd bpf_cmd;
