@@ -56,15 +56,15 @@ struct event {
 struct event _event = {0};
 
 struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 4096);
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 4096);
 } events SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, MAX_FUNC_ENTRIES);
-    __type(key, u32);
-    __type(value, struct bpf_func_entry);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, MAX_FUNC_ENTRIES);
+	__type(key, u32);
+	__type(value, struct bpf_func_entry);
 } func_entry_scratch SEC(".maps");
 
 static void event_init(struct event *event, enum event_type type) {
@@ -235,11 +235,13 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
         event_init(event, PROG_LOAD);
         event_populate_prog(event, prog);
         event->funcs.num_entries = num_entries;
+
 	bpf_for(i, 0, num_entries) {
 		struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
 		if (!entry)
 			goto err;
-		bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
+
+                bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
 				 entry, sizeof(*entry), 0);
 	}
 
