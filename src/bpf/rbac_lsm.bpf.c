@@ -46,6 +46,7 @@ struct event {
 	enum bpf_prog_type prog_type;
 	enum bpf_map_type map_type;
         enum bpf_cmd bpf_cmd;
+        u8 access_mode;
         struct bpf_func_list funcs; /* keep last */
 };
 
@@ -118,13 +119,14 @@ out:
 }
 
 SEC("lsm/bpf_map")
-int BPF_PROG(bpf_map_hook, struct bpf_map *map)
+int BPF_PROG(bpf_map_hook, struct bpf_map *map, unsigned int fmode)
 {
 	struct event *event = new_event(MAP_FD_ACCESS);
         if (!event)
 		goto out;
 
         event_populate_map(event, map);
+        event->access_mode = fmode;
 	bpf_ringbuf_submit(event, 0);
 out:
 	return 0;
@@ -264,7 +266,7 @@ out:
 }
 
 SEC("lsm/mmap_file")
-int BPF_PROG(mmap_file_hook, struct file *file) {
+int BPF_PROG(mmap_file_hook, struct file *file, unsigned int mode) {
 	struct bpf_map *map;
 
 	if (!file || (u64)file->f_op != map_fops_addr)
@@ -276,6 +278,7 @@ int BPF_PROG(mmap_file_hook, struct file *file) {
 		goto out;
 
         event_populate_map(event, map);
+        event->access_mode = mode;
 	bpf_ringbuf_submit(event, 0);
 out:
 	return 0;

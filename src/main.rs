@@ -57,6 +57,39 @@ impl From<&bpf_func_entry> for Funcall {
 }
 
 #[derive(Debug)]
+enum Fmode {
+    NoAccess,
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl Display for Fmode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        use Fmode::*;
+        match self {
+            NoAccess => write!(f, "-"),
+            Read => write!(f, "r"),
+            Write => write!(f, "w"),
+            ReadWrite => write!(f, "rw"),
+        }
+    }
+}
+
+impl From<u8> for Fmode {
+    fn from(mode: u8) -> Self {
+        use Fmode::*;
+        match mode & 3 {
+            0 => NoAccess,
+            1 => Read,
+            2 => Write,
+            3 => ReadWrite,
+            _ => panic!("can't happen"),
+        }
+    }
+}
+
+#[derive(Debug)]
 enum EventKind {
     BpfSyscall {
         cmd: BpfCmd,
@@ -65,6 +98,7 @@ enum EventKind {
         map_id: u32,
         map_name: String,
         map_type: BpfMapType,
+        access_mode: Fmode,
     },
     MapCreate {
         map_name: String,
@@ -74,6 +108,7 @@ enum EventKind {
         map_id: u32,
         map_name: String,
         map_type: BpfMapType,
+        access_mode: Fmode,
     },
     ProgFdAccess {
         prog_id: u32,
@@ -96,10 +131,11 @@ impl Display for EventKind {
                 map_id,
                 map_name,
                 map_type,
+                access_mode,
             } => write!(
                 f,
-                "Map FD access (id: {} name: {} type: {})",
-                map_id, map_name, map_type
+                "Map FD access (id: {} name: {} type: {} mode: {})",
+                map_id, map_name, map_type, access_mode
             ),
             MapCreate { map_name, map_type } => {
                 write!(f, "Map create (name: {} type: {})", map_name, map_type)
@@ -109,10 +145,11 @@ impl Display for EventKind {
                 map_id,
                 map_name,
                 map_type,
+                access_mode,
             } => write!(
                 f,
-                "Map FD access (id: {} name: {} type: {})",
-                map_id, map_name, map_type
+                "Map MMAP (id: {} name: {} type: {} mode: {})",
+                map_id, map_name, map_type, access_mode
             ),
             ProgFdAccess {
                 prog_id,
@@ -177,11 +214,13 @@ impl TryFrom<&event> for Event {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                     map_id: evt.obj_id,
                     map_type: evt.map_type.try_into()?,
+                    access_mode: evt.access_mode.into(),
                 },
                 event_type::MAP_MMAP => EventKind::MapMmap {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
                     map_id: evt.obj_id,
                     map_type: evt.map_type.try_into()?,
+                    access_mode: evt.access_mode.into(),
                 },
                 event_type::MAP_CREATE => EventKind::MapCreate {
                     map_name: buf_to_str(&evt.obj_name)?.into(),
