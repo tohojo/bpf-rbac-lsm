@@ -2,6 +2,7 @@
 
 #include <linux/bpf.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "vmlinux.h"
@@ -142,18 +143,50 @@ out:
 	return 0;
 }
 
+static bool entry_exists(u16 call_type, u16 btf_id, u32 func_id,
+                        int num_entries) {
+	struct bpf_func_entry *entry;
+	int i;
+
+	bpf_for(i, 0, num_entries) {
+                entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
+                if (!entry)
+			return false;
+
+                if (entry->call_type == call_type &&
+                    entry->btf_id == btf_id &&
+                    entry->func_id == func_id)
+			return true;
+        }
+        return false;
+}
+
 static int walk_bpf_instructions(struct bpf_prog *prog)
 {
 	int insn_cnt = prog->len, i, num_entries = 0;
-	struct bpf_func_entry *entry;
 
 	bpf_for(i, 0, insn_cnt) {
-		struct bpf_insn insn;
+		struct bpf_func_entry *entry;
+		u16 call_type, btf_id;
+                struct bpf_insn insn;
+                u32 func_id;
 
                 if (bpf_probe_read_kernel(&insn, sizeof(insn), &prog->insnsi[i]))
 			continue;
 
 		if (insn.code != (BPF_JMP | BPF_CALL))
+			continue;
+
+                if (insn.src_reg == 0) {
+			call_type = FUNC_HELPER;
+			btf_id = 0;
+                } else {
+			call_type = FUNC_KFUNC;
+                        btf_id = insn.off;
+		}
+                func_id = insn.imm;
+
+                if (entry_exists(call_type, btf_id, func_id, num_entries))
 			continue;
 
                 if (num_entries >= MAX_FUNC_ENTRIES)
@@ -163,15 +196,9 @@ static int walk_bpf_instructions(struct bpf_prog *prog)
                 if (!entry)
 			return -E2BIG;
 
-                if (insn.src_reg == 0) { /* helper */
-			entry->call_type = FUNC_HELPER;
-                        entry->func_id = insn.imm;
-                        entry->btf_id = 0;
-		} else if (insn.src_reg == BPF_PSEUDO_KFUNC_CALL) { /* kfunc */
-			entry->call_type = FUNC_KFUNC;
-                        entry->func_id = insn.imm;
-                        entry->btf_id = insn.off;
-                }
+		entry->call_type = call_type;
+		entry->btf_id = btf_id;
+		entry->func_id = func_id;
                 num_entries++;
         }
 
