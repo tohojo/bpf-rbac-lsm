@@ -219,13 +219,16 @@ fn collect_funcalls(event: &mut Event, data: &[u8]) -> Result<()> {
     match &mut event.kind {
         EventKind::ProgLoad { funcs, .. } => {
             let extra_data = &data[offset_of!(event, funcs)..];
-            let flist: &bpf_func_list = plain::from_bytes(extra_data).expect("Not enough data");
+            let flist: &bpf_func_list = plain::from_bytes(extra_data)
+                .or(Err(anyhow!("Couldn't get func list entry count")))?;
+
             if flist.num_entries > 0 {
                 let entries: &[bpf_func_entry] = plain::slice_from_bytes_len(
                     &extra_data[offset_of!(bpf_func_list, entries)..],
                     flist.num_entries as usize,
                 )
-                .expect("Not enough data");
+                .or(Err(anyhow!("Couldn't parse func list entries")))?;
+
                 entries
                     .iter()
                     .for_each(|f| funcs.push(<&bpf_func_entry as Into<Funcall>>::into(f).clone()));
