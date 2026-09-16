@@ -64,7 +64,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, MAX_FUNC_ENTRIES);
     __type(key, u32);
-    __type(value, sizeof(struct bpf_func_entry));
+    __type(value, struct bpf_func_entry);
 } func_entry_scratch SEC(".maps");
 
 static void event_init(struct event *event, enum event_type type) {
