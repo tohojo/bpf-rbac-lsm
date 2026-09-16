@@ -19,39 +19,35 @@ mod bpf_types;
 use bpf_types::rbac_lsm::*;
 
 use bpf_types::rbac_lsm::types::{bpf_func_entry, bpf_func_list, event, event_type};
-use bpf_types::{BpfCmd, BpfMapType, BpfProgType};
+use bpf_types::{BpfCmd, BpfFuncId, BpfMapType, BpfProgType};
 
 #[derive(Clone, Debug)]
-enum CallType {
-    Helper,
-    Kfunc,
-}
-
-#[derive(Clone, Debug)]
-struct Funcall {
-    call_type: CallType,
-    btf_id: u16,
-    func_id: u32,
+enum Funcall {
+    Helper(BpfFuncId),
+    Kfunc { btf_id: u16, func_id: u32 },
 }
 
 impl Display for Funcall {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self.call_type {
-            CallType::Helper => write!(f, "Helper({})", self.func_id),
-            CallType::Kfunc => write!(f, "Kfunc({}:{})", self.btf_id, self.func_id),
+        use Funcall::*;
+        match self {
+            Helper(id) => write!(f, "Helper({})", id),
+            Kfunc { btf_id, func_id } => write!(f, "Kfunc({}:{})", btf_id, func_id),
         }
     }
 }
 
-impl From<&bpf_func_entry> for Funcall {
-    fn from(fe: &bpf_func_entry) -> Self {
-        Funcall {
-            call_type: match fe.call_type {
-                0 => CallType::Helper,
-                _ => CallType::Kfunc,
-            },
-            btf_id: fe.btf_id,
-            func_id: fe.func_id,
+impl TryFrom<&bpf_func_entry> for Funcall {
+    type Error = Error;
+
+    fn try_from(fe: &bpf_func_entry) -> Result<Self, Self::Error> {
+        use Funcall::*;
+        match fe.call_type {
+            0 => Ok(Helper(fe.func_id.try_into()?)),
+            _ => Ok(Kfunc {
+                btf_id: fe.btf_id,
+                func_id: fe.func_id,
+            }),
         }
     }
 }
@@ -268,9 +264,10 @@ fn collect_funcalls(event: &mut Event, data: &[u8]) -> Result<()> {
                 )
                 .or(Err(anyhow!("Couldn't parse func list entries")))?;
 
-                entries
-                    .iter()
-                    .for_each(|f| funcs.push(<&bpf_func_entry as Into<Funcall>>::into(f).clone()));
+                for f in entries.iter() {
+                    let func: Funcall = f.try_into()?;
+                    funcs.push(func);
+                }
             }
             Ok(())
         }
@@ -291,10 +288,12 @@ fn handle_event(data: &[u8]) -> i32 {
 
     let evt: Result<Event> = event.try_into();
     if let Ok(mut e) = evt {
-        collect_funcalls(&mut e, data).unwrap();
+        if let Err(e) = collect_funcalls(&mut e, data) {
+            eprintln!("{} ERROR: collecting function calls: {}", now, e);
+        }
         println!("{:8} {}", now, e);
     } else {
-        eprintln!("Error parsing event: {:?}", evt);
+        eprintln!("{} ERROR parsing event: {:?}", now, evt);
     }
     0
 }
