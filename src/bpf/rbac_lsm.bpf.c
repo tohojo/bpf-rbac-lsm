@@ -10,6 +10,7 @@
 char _license[] SEC("license") = "GPL";
 
 volatile const u64 map_fops_addr = 0;
+volatile const int enforcing = 0;
 
 enum event_type {
 	BPF_SYSCALL,
@@ -40,6 +41,7 @@ struct event {
 	enum event_type event_type;
 	int pid;
 	u64 userns;
+	u64 policy_id;
 	u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
 	u32 obj_id;
@@ -47,10 +49,31 @@ struct event {
 	enum bpf_map_type map_type;
         enum bpf_cmd bpf_cmd;
         u8 access_mode;
+        char policy_verdict;
         struct bpf_func_list funcs; /* keep last */
 };
 
 #define MAX_FUNC_ENTRIES 1024
+#define MAX_POLICIES 1024
+
+#define word_type u64
+#define word_bitsize (sizeof(word_type)*8)
+#define bitmap_words(x) (((x-1)/(word_bitsize))+1)
+#define bitmap(n, s) word_type n[bitmap_words(s)]
+
+struct policy {
+	u64 id;
+	bitmap(allowed_commands, __MAX_BPF_CMD);
+	bitmap(allowed_map_types, __MAX_BPF_MAP_TYPE);
+	bitmap(allowed_prog_types, __MAX_BPF_PROG_TYPE);
+	bitmap(allowed_helpers, __BPF_FUNC_MAX_ID);
+};
+
+#define bitmap_word(b) (b / word_bitsize)
+#define bitmap_value(b) (1ULL << (b % word_bitsize))
+#define bitmap_size(_p, _t) (sizeof((_p)->_t)*8)
+#define check_policy_bit(_p, _t, _b) (_b < bitmap_size(_p, _t) && \
+				      ((_p)->_t[bitmap_word(_b)] & bitmap_value(_b)))
 
 // Dummy instance to get skeleton to generate definition for `struct event`
 struct event _event = {0};
@@ -67,8 +90,75 @@ struct {
 	__type(value, struct bpf_func_entry);
 } func_entry_scratch SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, MAX_POLICIES);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, u64);
+	__type(value, struct policy);
+} policies SEC(".maps");
+
+static struct policy *get_policy(struct event *event)
+{
+	return bpf_map_lookup_elem(&policies, &event->userns);
+}
+
+static int check_policy(struct event *event)
+{
+	struct policy *policy;
+        int ret = 0;
+
+        policy = get_policy(event);
+        if (!policy) {
+		ret = -ENOENT;
+                goto out;
+        }
+
+        event->policy_id = policy->id;
+
+        switch (event->event_type) {
+        case MAP_CREATE:
+        case MAP_FD_ACCESS:
+        case MAP_MMAP:
+		if (!check_policy_bit(policy, allowed_map_types, event->map_type))
+			ret = -EPERM;
+                break;
+        case PROG_LOAD:
+	case PROG_FD_ACCESS:
+		if (!check_policy_bit(policy, allowed_prog_types, event->prog_type))
+			ret = -EPERM;
+                break;
+        case BPF_SYSCALL:
+		if (!check_policy_bit(policy, allowed_commands, event->bpf_cmd))
+			ret = -EPERM;
+                break;
+        }
+
+        if (event->funcs.num_entries) {
+		int i;
+
+		bpf_for(i, 0, event->funcs.num_entries) {
+			struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
+			if (!entry)
+				break;
+
+			if (entry->call_type == FUNC_HELPER &&
+			    !check_policy_bit(policy, allowed_helpers, entry->func_id)) {
+				ret = -ENOEXEC;
+				break;
+			}
+                }
+	}
+out:
+	if (!event->policy_verdict)
+		event->policy_verdict = ret;
+        return (event->policy_verdict && enforcing) ? -EPERM : 0;
+}
+
 static void event_init(struct event *event, enum event_type type) {
-        struct task_struct *task = bpf_get_current_task_btf();
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	__builtin_memset(event, 0, sizeof(*event));
 
         event->event_type = type;
         event->pid = task->pid;
@@ -107,42 +197,54 @@ static void event_populate_prog(struct event *event, struct bpf_prog *prog)
 SEC("lsm/bpf")
 int BPF_PROG(sys_bpf_hook, int cmd, union bpf_attr *attr, unsigned int size)
 {
-	struct event *event = new_event(BPF_SYSCALL);
+	struct event *event;
+        int ret = -ENOMEM;
+
+	event = new_event(BPF_SYSCALL);
 	if (!event)
 		goto out;
 
-	event->bpf_cmd = cmd;
+        event->bpf_cmd = cmd;
+        ret = check_policy(event);
 
 	bpf_ringbuf_submit(event, 0);
 out:
-	return 0;
+	return ret;
 }
 
 SEC("lsm/bpf_map")
 int BPF_PROG(bpf_map_hook, struct bpf_map *map, unsigned int fmode)
 {
-	struct event *event = new_event(MAP_FD_ACCESS);
+	struct event *event;
+        int ret = -ENOMEM;
+
+	event = new_event(MAP_FD_ACCESS);
         if (!event)
 		goto out;
 
         event_populate_map(event, map);
         event->access_mode = fmode;
+        ret = check_policy(event);
 	bpf_ringbuf_submit(event, 0);
 out:
-	return 0;
+	return ret;
 }
 
 SEC("lsm/bpf_map_create")
 int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 {
-	struct event *event = new_event(MAP_CREATE);
+	struct event *event;
+	int ret = -ENOMEM;
+
+	event= new_event(MAP_CREATE);
 	if (!event)
 		goto out;
 
         event_populate_map(event, map);
+        ret = check_policy(event);
         bpf_ringbuf_submit(event, 0);
 out:
-	return 0;
+	return ret;
 }
 
 static bool entry_exists(u16 call_type, u16 btf_id, u32 func_id,
@@ -218,10 +320,7 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
         if (ret < 0)
 		goto out;
         num_entries = ret;
-
         extra_size = num_entries * sizeof(struct bpf_func_entry);
-        if (extra_size > sizeof(struct bpf_func_entry) * MAX_FUNC_ENTRIES)
-		goto out;
 
         ret = bpf_ringbuf_reserve_dynptr(&events, sizeof(*event) + extra_size,
                                          0, &ptr);
@@ -243,45 +342,57 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
 
                 bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
 				 entry, sizeof(*entry), 0);
-	}
+        }
+
+        ret = check_policy(event);
 
         bpf_ringbuf_submit_dynptr(&ptr, 0);
 out:
-	return 0;
+	if (ret < 4095) /* to appease the verifier */
+		ret = -EINVAL;
+	return ret;
 err:
 	bpf_ringbuf_discard_dynptr(&ptr, 0);
-	return 0;
+	return -ENOMEM;
 }
 
 SEC("lsm/bpf_prog")
 int BPF_PROG(sys_bpf_prog_hook, struct bpf_prog *prog)
 {
-	struct event *event = new_event(PROG_FD_ACCESS);
+	struct event *event;
+        int ret = -ENOMEM;
+
+	event= new_event(PROG_FD_ACCESS);
         if (!event)
 		goto out;
 
         event_populate_prog(event, prog);
 
+	ret = check_policy(event);
 	bpf_ringbuf_submit(event, 0);
 out:
-	return 0;
+	return ret;
 }
 
 SEC("lsm/mmap_file")
 int BPF_PROG(mmap_file_hook, struct file *file, unsigned int mode) {
 	struct bpf_map *map;
+        struct event *event;
+        int ret = -ENOMEM;
 
+        /* we only care about bpf map fds */
 	if (!file || (u64)file->f_op != map_fops_addr)
 		return 0;
 
         map = file->private_data;
-	struct event *event = new_event(MAP_MMAP);
+	event = new_event(MAP_MMAP);
         if (!event)
 		goto out;
 
         event_populate_map(event, map);
         event->access_mode = mode;
+	ret = check_policy(event);
 	bpf_ringbuf_submit(event, 0);
 out:
-	return 0;
+	return ret;
 }
