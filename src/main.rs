@@ -187,6 +187,8 @@ struct Event {
     comm: String,
     pid: i32,
     userns: u64,
+    policy_id: u64,
+    policy_verdict: i8,
     kind: EventKind,
 }
 
@@ -202,6 +204,8 @@ impl TryFrom<&event> for Event {
             comm: buf_to_str(&evt.comm)?.into(),
             pid: evt.pid,
             userns: evt.userns,
+            policy_id: evt.policy_id,
+            policy_verdict: evt.policy_verdict,
             kind: match evt.event_type {
                 event_type::BPF_SYSCALL => EventKind::BpfSyscall {
                     cmd: evt.bpf_cmd.try_into()?,
@@ -244,8 +248,8 @@ impl Display for Event {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
         write!(
             f,
-            "{}({}) in {}: {}",
-            self.comm, self.pid, self.userns, self.kind
+            "{}({}) in {} (policy {} verdict {}): {}",
+            self.comm, self.pid, self.userns, self.policy_id, self.policy_verdict, self.kind
         )
     }
 }
