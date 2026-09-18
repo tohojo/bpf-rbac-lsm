@@ -333,11 +333,11 @@ fn main() -> Result<()> {
     let mut skel = open_skel.load()?;
     skel.attach()?;
 
-    println!("Loaded BPF LSM. Press Ctrl-C to exit...");
-
     let mut r = RingBufferBuilder::new();
     r.add(&skel.maps.events, handle_event)?;
     let ring = r.build()?;
+
+    println!("Loaded BPF LSM. Press Ctrl-C to exit...");
 
     loop {
         ring.poll(Duration::from_millis(100))?;
