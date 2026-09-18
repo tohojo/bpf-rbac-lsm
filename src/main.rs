@@ -1,15 +1,16 @@
 use std::ffi::CStr;
 use std::fmt::{Display, Formatter};
-use std::fs::File;
+use std::fs;
 use std::io::{self, BufRead};
 use std::mem::{MaybeUninit, offset_of};
+use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
 use anyhow::{Error, Result, anyhow, bail};
-use libbpf_rs::RingBufferBuilder;
 use libbpf_rs::skel::OpenSkel;
 use libbpf_rs::skel::Skel;
 use libbpf_rs::skel::SkelBuilder;
+use libbpf_rs::{MapCore, RingBufferBuilder};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -310,7 +311,7 @@ fn handle_event(data: &[u8]) -> i32 {
 }
 
 fn resolve_ksym(name: &str) -> Result<u64> {
-    let file = File::open("/proc/kallsyms")?;
+    let file = fs::File::open("/proc/kallsyms")?;
     let mut lines = io::BufReader::new(file).lines();
     if let Some(Ok(line)) =
         lines.find(|l| l.as_ref().is_ok_and(|l| l.split(" ").nth(2) == Some(name)))
@@ -320,6 +321,11 @@ fn resolve_ksym(name: &str) -> Result<u64> {
         }
     }
     Err(anyhow!("ksym '{}' not found", name))
+}
+
+fn get_userns_id() -> Result<u64> {
+    let attr = fs::metadata("/proc/self/ns/user")?;
+    Ok(attr.ino())
 }
 
 fn main() -> Result<()> {
@@ -332,6 +338,20 @@ fn main() -> Result<()> {
         d.map_fops_addr = addr;
     });
     let mut skel = open_skel.load()?;
+
+    let mut policy = policy::Policy::default();
+    let userns_id = get_userns_id()?;
+
+    // The commands we issue after attaching below
+    policy.add_allowed_cmd(BpfCmd::BPF_LINK_CREATE);
+    policy.add_allowed_cmd(BpfCmd::BPF_OBJ_GET_INFO_BY_FD);
+    policy.add_allowed_map_type(BpfMapType::BPF_MAP_TYPE_RINGBUF);
+
+    skel.maps.policies.update(
+        &userns_id.to_ne_bytes(),
+        policy.into_bpf_policy(userns_id)?.as_bytes(),
+        libbpf_rs::MapFlags::NO_EXIST,
+    )?;
     skel.attach()?;
 
     let mut r = RingBufferBuilder::new();

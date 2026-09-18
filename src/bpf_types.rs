@@ -15,6 +15,13 @@ unsafe impl Plain for rbac_lsm::types::event {}
 unsafe impl Plain for rbac_lsm::types::bpf_func_entry {}
 unsafe impl Plain for rbac_lsm::types::bpf_func_list {}
 
+impl rbac_lsm::types::policy {
+    pub fn as_bytes(&self) -> &[u8] {
+        // safety: policy is a repr(C) struct and bindgen generates any needed padding
+        unsafe { plain::as_bytes(self) }
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr, EnumIter)]
 #[repr(u32)]
