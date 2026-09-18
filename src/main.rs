@@ -182,6 +182,45 @@ impl Display for EventKind {
     }
 }
 
+impl TryFrom<&event> for EventKind {
+    type Error = Error;
+
+    fn try_from(evt: &event) -> Result<Self, Self::Error> {
+        Ok(match evt.event_type {
+            event_type::BPF_SYSCALL => Self::BpfSyscall {
+                cmd: evt.bpf_cmd.try_into()?,
+            },
+            event_type::MAP_FD_ACCESS => Self::MapFdAccess {
+                map_name: buf_to_str(&evt.obj_name)?.into(),
+                map_id: evt.obj_id,
+                map_type: evt.map_type.try_into()?,
+                access_mode: evt.access_mode.into(),
+            },
+            event_type::MAP_MMAP => Self::MapMmap {
+                map_name: buf_to_str(&evt.obj_name)?.into(),
+                map_id: evt.obj_id,
+                map_type: evt.map_type.try_into()?,
+                access_mode: evt.access_mode.into(),
+            },
+            event_type::MAP_CREATE => Self::MapCreate {
+                map_name: buf_to_str(&evt.obj_name)?.into(),
+                map_type: evt.map_type.try_into()?,
+            },
+            event_type::PROG_FD_ACCESS => Self::ProgFdAccess {
+                prog_name: buf_to_str(&evt.obj_name)?.into(),
+                prog_id: evt.obj_id,
+                prog_type: evt.prog_type.try_into()?,
+            },
+            event_type::PROG_LOAD => Self::ProgLoad {
+                prog_name: buf_to_str(&evt.obj_name)?.into(),
+                prog_type: evt.prog_type.try_into()?,
+                funcs: Vec::with_capacity(evt.funcs.num_entries as usize),
+            },
+            t => bail!("Unknown event type {:?}", t),
+        })
+    }
+}
+
 #[derive(Debug)]
 struct Event {
     comm: String,
@@ -200,47 +239,14 @@ impl TryFrom<&event> for Event {
     type Error = Error;
 
     fn try_from(evt: &event) -> Result<Self, Self::Error> {
-        let event = Event {
+        Ok(Event {
             comm: buf_to_str(&evt.comm)?.into(),
             pid: evt.pid,
             userns: evt.userns,
             policy_id: evt.policy_id,
             policy_verdict: evt.policy_verdict,
-            kind: match evt.event_type {
-                event_type::BPF_SYSCALL => EventKind::BpfSyscall {
-                    cmd: evt.bpf_cmd.try_into()?,
-                },
-                event_type::MAP_FD_ACCESS => EventKind::MapFdAccess {
-                    map_name: buf_to_str(&evt.obj_name)?.into(),
-                    map_id: evt.obj_id,
-                    map_type: evt.map_type.try_into()?,
-                    access_mode: evt.access_mode.into(),
-                },
-                event_type::MAP_MMAP => EventKind::MapMmap {
-                    map_name: buf_to_str(&evt.obj_name)?.into(),
-                    map_id: evt.obj_id,
-                    map_type: evt.map_type.try_into()?,
-                    access_mode: evt.access_mode.into(),
-                },
-                event_type::MAP_CREATE => EventKind::MapCreate {
-                    map_name: buf_to_str(&evt.obj_name)?.into(),
-                    map_type: evt.map_type.try_into()?,
-                },
-                event_type::PROG_FD_ACCESS => EventKind::ProgFdAccess {
-                    prog_name: buf_to_str(&evt.obj_name)?.into(),
-                    prog_id: evt.obj_id,
-                    prog_type: evt.prog_type.try_into()?,
-                },
-                event_type::PROG_LOAD => EventKind::ProgLoad {
-                    prog_name: buf_to_str(&evt.obj_name)?.into(),
-                    prog_type: evt.prog_type.try_into()?,
-                    funcs: Vec::with_capacity(evt.funcs.num_entries as usize),
-                },
-                t => bail!("Unknown event type {:?}", t),
-            },
-        };
-
-        Ok(event)
+            kind: evt.try_into()?,
+        })
     }
 }
 
