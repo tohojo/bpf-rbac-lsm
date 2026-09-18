@@ -227,6 +227,7 @@ impl TryFrom<&event> for EventKind {
 struct Event {
     comm: String,
     pid: i32,
+    missed_events: u64,
     userns: u64,
     policy_id: u64,
     policy_verdict: i8,
@@ -244,6 +245,7 @@ impl TryFrom<&event> for Event {
         Ok(Event {
             comm: buf_to_str(&evt.comm)?.into(),
             pid: evt.pid,
+            missed_events: evt.missed_events,
             userns: evt.userns,
             policy_id: evt.policy_id,
             policy_verdict: evt.policy_verdict,
@@ -300,6 +302,12 @@ fn handle_event(data: &[u8]) -> i32 {
 
     let evt: Result<Event> = event.try_into();
     if let Ok(mut e) = evt {
+        if e.missed_events > 0 {
+            eprintln!(
+                "{} WARNING: missed {} events from the kernel",
+                now, e.missed_events
+            );
+        }
         if let Err(e) = collect_funcalls(&mut e, data) {
             eprintln!("{} ERROR: collecting function calls: {}", now, e);
         }

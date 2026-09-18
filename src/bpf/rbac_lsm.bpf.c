@@ -42,6 +42,7 @@ struct event {
 	int pid;
 	u64 userns;
 	u64 policy_id;
+        u64 missed_events;
 	u8 comm[16];
 	u8 obj_name[BPF_OBJ_NAME_LEN];
 	u32 obj_id;
@@ -77,6 +78,7 @@ struct policy {
 
 // Dummy instance to get skeleton to generate definition for `struct event`
 struct event _event = {0};
+u64 missed_events = 0;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -166,16 +168,6 @@ static void event_init(struct event *event, enum event_type type) {
         bpf_probe_read_kernel_str(&event->comm, sizeof(event->comm),
                                   task->comm);
 }
-static struct event *new_event(enum event_type type) {
-	struct event *event;
-
-        event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
-        if (!event)
-		return NULL;
-
-        event_init(event, type);
-        return event;
-}
 
 static void event_populate_map(struct event *event, struct bpf_map *map)
 {
@@ -193,57 +185,65 @@ static void event_populate_prog(struct event *event, struct bpf_prog *prog)
         event->obj_id = prog->aux->id;
 }
 
+static void event_submit(struct event *event) {
+	u64 missed = missed_events;
+        int ret;
+
+        if (missed) {
+		if (__sync_bool_compare_and_swap(&missed_events, missed, 0))
+			event->missed_events = missed;
+                else
+			missed = 0;
+	}
+
+        ret = bpf_ringbuf_output(&events, event, sizeof(*event), 0);
+        if (ret)
+                __sync_fetch_and_add(&missed_events, ++missed);
+}
 
 SEC("lsm/bpf")
 int BPF_PROG(sys_bpf_hook, int cmd, union bpf_attr *attr, unsigned int size)
 {
-	struct event *event;
-        int ret = -ENOMEM;
+	struct event event;
+        int ret;
 
-	event = new_event(BPF_SYSCALL);
-	if (!event)
-		goto out;
+	event_init(&event, BPF_SYSCALL);
+        event.bpf_cmd = cmd;
 
-        event->bpf_cmd = cmd;
-        ret = check_policy(event);
+        ret = check_policy(&event);
 
-	bpf_ringbuf_submit(event, 0);
-out:
+        event_submit(&event);
 	return ret;
 }
 
 SEC("lsm/bpf_map")
 int BPF_PROG(bpf_map_hook, struct bpf_map *map, unsigned int fmode)
 {
-	struct event *event;
-        int ret = -ENOMEM;
+	struct event event;
+        int ret;
 
-	event = new_event(MAP_FD_ACCESS);
-        if (!event)
-		goto out;
+	event_init(&event, MAP_FD_ACCESS);
+        event_populate_map(&event, map);
+        event.access_mode = fmode;
 
-        event_populate_map(event, map);
-        event->access_mode = fmode;
-        ret = check_policy(event);
-	bpf_ringbuf_submit(event, 0);
-out:
+        ret = check_policy(&event);
+
+        event_submit(&event);
 	return ret;
 }
 
 SEC("lsm/bpf_map_create")
 int BPF_PROG(sys_bpf_map_create_hook, struct bpf_map *map)
 {
-	struct event *event;
-	int ret = -ENOMEM;
+	struct event event;
+	int ret;
 
-	event= new_event(MAP_CREATE);
-	if (!event)
-		goto out;
+	event_init(&event, MAP_CREATE);
+        event_populate_map(&event, map);
 
-        event_populate_map(event, map);
-        ret = check_policy(event);
-        bpf_ringbuf_submit(event, 0);
-out:
+        ret = check_policy(&event);
+        event_submit(&event);
+
 	return ret;
 }
 
@@ -312,8 +312,9 @@ static int walk_bpf_instructions(struct bpf_prog *prog)
 SEC("lsm/bpf_prog_load")
 int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
         u32 extra_size, num_entries;
+        struct event *event, evt;
         struct bpf_dynptr ptr;
-        struct event *event;
+        bool dptr = false;
         int ret, i;
 
         ret = walk_bpf_instructions(prog);
@@ -324,16 +325,22 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
 
         ret = bpf_ringbuf_reserve_dynptr(&events, sizeof(*event) + extra_size,
                                          0, &ptr);
-        if (ret)
-		goto err;
-
-        event = bpf_dynptr_data(&ptr, 0, sizeof(*event));
-        if (!event)
-                goto err;
+        if (ret) {
+		event = &evt;
+		bpf_ringbuf_discard_dynptr(&ptr, 0);
+        } else {
+		dptr = true;
+		event = bpf_dynptr_data(&ptr, 0, sizeof(*event));
+		if (!event)
+			goto err;
+	}
 
         event_init(event, PROG_LOAD);
         event_populate_prog(event, prog);
         event->funcs.num_entries = num_entries;
+
+        if (!dptr)
+		goto check;
 
 	bpf_for(i, 0, num_entries) {
 		struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
@@ -344,9 +351,13 @@ int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
 				 entry, sizeof(*entry), 0);
         }
 
+check:
         ret = check_policy(event);
 
-        bpf_ringbuf_submit_dynptr(&ptr, 0);
+        if (dptr)
+		bpf_ringbuf_submit_dynptr(&ptr, 0);
+        else
+		event_submit(event);
 out:
 	if (ret < 4095) /* to appease the verifier */
 		ret = -EINVAL;
@@ -359,17 +370,14 @@ err:
 SEC("lsm/bpf_prog")
 int BPF_PROG(sys_bpf_prog_hook, struct bpf_prog *prog)
 {
-	struct event *event;
-        int ret = -ENOMEM;
+	struct event event;
+        int ret;
 
-	event= new_event(PROG_FD_ACCESS);
-        if (!event)
-		goto out;
+	event_init(&event, PROG_FD_ACCESS);
+        event_populate_prog(&event, prog);
 
-        event_populate_prog(event, prog);
-
-	ret = check_policy(event);
-	bpf_ringbuf_submit(event, 0);
+        ret = check_policy(&event);
+        event_submit(&event);
 out:
 	return ret;
 }
@@ -377,22 +385,21 @@ out:
 SEC("lsm/mmap_file")
 int BPF_PROG(mmap_file_hook, struct file *file, unsigned int mode) {
 	struct bpf_map *map;
-        struct event *event;
-        int ret = -ENOMEM;
+        struct event event;
+        int ret;
 
         /* we only care about bpf map fds */
 	if (!file || (u64)file->f_op != map_fops_addr)
 		return 0;
 
         map = file->private_data;
-	event = new_event(MAP_MMAP);
-        if (!event)
-		goto out;
 
-        event_populate_map(event, map);
-        event->access_mode = mode;
-	ret = check_policy(event);
-	bpf_ringbuf_submit(event, 0);
-out:
+        event_init(&event, MAP_MMAP);
+        event_populate_map(&event, map);
+        event.access_mode = mode;
+
+        ret = check_policy(&event);
+
+        event_submit(&event);
 	return ret;
 }
