@@ -187,6 +187,7 @@ static void event_populate_prog(struct event *event, struct bpf_prog *prog)
 
 static void event_submit(struct event *event) {
 	u64 missed = missed_events;
+	struct bpf_dynptr ptr;
         int ret;
 
         if (missed) {
@@ -194,11 +195,40 @@ static void event_submit(struct event *event) {
 			event->missed_events = missed;
                 else
 			missed = 0;
-	}
+        }
 
-        ret = bpf_ringbuf_output(&events, event, sizeof(*event), 0);
-        if (ret)
-                __sync_fetch_and_add(&missed_events, ++missed);
+        if (event->funcs.num_entries) {
+		u32 extra_size, num_entries;
+		int i;
+
+		num_entries = event->funcs.num_entries;
+                extra_size = num_entries * sizeof(struct bpf_func_entry);
+
+                ret = bpf_ringbuf_reserve_dynptr(&events, sizeof(*event) + extra_size, 0, &ptr);
+                if (ret) {
+			bpf_ringbuf_discard_dynptr(&ptr, 0);
+                        goto out;
+                }
+
+                bpf_dynptr_write(&ptr, 0, event, sizeof(*event), 0);
+
+		bpf_for(i, 0, num_entries) {
+			struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
+			if (!entry)
+				break;
+
+			bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
+					 entry, sizeof(*entry), 0);
+                }
+		bpf_ringbuf_submit_dynptr(&ptr, 0);
+	} else {
+		ret = bpf_ringbuf_output(&events, event, sizeof(*event), 0);
+        }
+
+out:
+	if (ret)
+		__sync_fetch_and_add(&missed_events, ++missed);
+
 }
 
 SEC("lsm/bpf")
@@ -311,60 +341,22 @@ static int walk_bpf_instructions(struct bpf_prog *prog)
 
 SEC("lsm/bpf_prog_load")
 int BPF_PROG(sys_bpf_prog_load_hook, struct bpf_prog *prog) {
-        u32 extra_size, num_entries;
-        struct event *event, evt;
-        struct bpf_dynptr ptr;
-        bool dptr = false;
-        int ret, i;
+        struct event event;
+        int ret;
+
+        event_init(&event, PROG_LOAD);
+        event_populate_prog(&event, prog);
 
         ret = walk_bpf_instructions(prog);
         if (ret < 0)
-		goto out;
-        num_entries = ret;
-        extra_size = num_entries * sizeof(struct bpf_func_entry);
-
-        ret = bpf_ringbuf_reserve_dynptr(&events, sizeof(*event) + extra_size,
-                                         0, &ptr);
-        if (ret) {
-		event = &evt;
-		bpf_ringbuf_discard_dynptr(&ptr, 0);
-        } else {
-		dptr = true;
-		event = bpf_dynptr_data(&ptr, 0, sizeof(*event));
-		if (!event)
-			goto err;
-	}
-
-        event_init(event, PROG_LOAD);
-        event_populate_prog(event, prog);
-        event->funcs.num_entries = num_entries;
-
-        if (!dptr)
-		goto check;
-
-	bpf_for(i, 0, num_entries) {
-		struct bpf_func_entry *entry = bpf_map_lookup_elem(&func_entry_scratch, &i);
-		if (!entry)
-			goto err;
-
-                bpf_dynptr_write(&ptr, offsetof(struct event, funcs.entries[i]),
-				 entry, sizeof(*entry), 0);
-        }
-
-check:
-        ret = check_policy(event);
-
-        if (dptr)
-		bpf_ringbuf_submit_dynptr(&ptr, 0);
+		event.policy_verdict = ret;
         else
-		event_submit(event);
-out:
-	if (ret < 4095) /* to appease the verifier */
-		ret = -EINVAL;
+		event.funcs.num_entries = ret;
+
+        ret = check_policy(&event);
+
+	event_submit(&event);
 	return ret;
-err:
-	bpf_ringbuf_discard_dynptr(&ptr, 0);
-	return -ENOMEM;
 }
 
 SEC("lsm/bpf_prog")
