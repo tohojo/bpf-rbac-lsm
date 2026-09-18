@@ -80,7 +80,7 @@ struct event _event = {0};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 4096);
+	__uint(max_entries, 1<<20);
 } events SEC(".maps");
 
 struct {
