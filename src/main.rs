@@ -340,6 +340,6 @@ fn main() -> Result<()> {
     println!("Loaded BPF LSM. Press Ctrl-C to exit...");
 
     loop {
-        ring.poll(Duration::from_millis(100))?;
+        ring.poll(Duration::MAX)?;
     }
 }
