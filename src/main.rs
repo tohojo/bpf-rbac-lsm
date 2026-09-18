@@ -14,6 +14,7 @@ use time::OffsetDateTime;
 use time::macros::format_description;
 
 mod bpf_types;
+mod policy;
 
 #[allow(clippy::wildcard_imports)]
 use bpf_types::rbac_lsm::*;

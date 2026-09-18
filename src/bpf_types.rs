@@ -1,6 +1,6 @@
 use anyhow::{Error, Result, anyhow};
 use plain::Plain;
-use strum_macros::{Display as EnumDisplay, FromRepr};
+use strum_macros::{Display as EnumDisplay, EnumIter, FromRepr};
 
 use rbac_lsm::types::{bpf_cmd, bpf_map_type, bpf_prog_type};
 
@@ -16,7 +16,7 @@ unsafe impl Plain for rbac_lsm::types::bpf_func_entry {}
 unsafe impl Plain for rbac_lsm::types::bpf_func_list {}
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, EnumDisplay, FromRepr)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr, EnumIter)]
 #[repr(u32)]
 pub enum BpfCmd {
     BPF_MAP_CREATE = 0,
@@ -73,7 +73,7 @@ impl TryFrom<bpf_cmd> for BpfCmd {
 
 #[allow(non_camel_case_types)]
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr, EnumIter)]
 pub enum BpfMapType {
     BPF_MAP_TYPE_UNSPEC = 0,
     BPF_MAP_TYPE_HASH = 1,
@@ -126,7 +126,7 @@ impl TryFrom<bpf_map_type> for BpfMapType {
 
 #[allow(non_camel_case_types)]
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr, EnumIter)]
 pub enum BpfProgType {
     BPF_PROG_TYPE_UNSPEC = 0,
     BPF_PROG_TYPE_SOCKET_FILTER = 1,
@@ -176,7 +176,7 @@ impl TryFrom<bpf_prog_type> for BpfProgType {
 
 #[allow(non_camel_case_types)]
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq, EnumDisplay, FromRepr, EnumIter)]
 pub enum BpfFuncId {
     BPF_FUNC_unspec = 0,
     BPF_FUNC_map_lookup_elem = 1,
